@@ -1,0 +1,27 @@
+# Core
+django==4.2.13
+djangorestframework==3.14.0
+drf-spectacular==0.27.0        # Swagger/OpenAPI documentation
+
+# WebSockets
+channels==4.0.0
+daphne==4.0.0
+channels-redis==4.0.0
+
+# CORS
+django-cors-headers==4.7.0
+
+# Auth
+djangorestframework-simplejwt==5.3.1
+
+# Database
+psycopg[binary]==3.3.3            # Latest stable, pre-built wheels
+
+# Environment
+python-dotenv==1.0.1
+
+# Password Hashing
+bcrypt==4.2.1
+
+# Utilities
+python-dateutil==2.9.0
