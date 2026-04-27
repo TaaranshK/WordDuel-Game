@@ -8,7 +8,7 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings.dev')
 # initialize django ASGI application early
 django_asgi_app = get_asgi_application()
 
-from game.routing import websocket_urlpatterns
+from apps.game.routing import websocket_urlpatterns
 
 application = ProtocolTypeRouter({
     'http': django_asgi_app,

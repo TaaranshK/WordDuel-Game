@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from .models import Match, Round, Guess, PlayerSession
-from accounts.serializers import PlayerSerializer
+from apps.accounts.serializers import PlayerSerializer
 
 
 class MatchSerializer(serializers.ModelSerializer):

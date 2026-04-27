@@ -1,5 +1,5 @@
 from django.db import models
-from accounts.models import Player
+from apps.accounts.models import Player
 
 
 class Match(models.Model):

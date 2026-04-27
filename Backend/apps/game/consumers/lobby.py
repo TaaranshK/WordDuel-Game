@@ -3,8 +3,8 @@ import json
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from django.utils import timezone
 
-from accounts.services import join_or_create_player
-from game.services import (
+from apps.accounts.services import join_or_create_player
+from apps.game.services import (
     add_to_lobby,
     remove_from_lobby,
     try_match_players,
@@ -122,7 +122,7 @@ class LobbyConsumer(AsyncJsonWebsocketConsumer):
                     return
 
         # --- get or create player ---
-        from accounts.services import join_or_create_player
+        from apps.accounts.services import join_or_create_player
         self.player, self.session_token = await self._get_or_create_player(username)
 
         # --- save session to DB ---
@@ -151,7 +151,7 @@ class LobbyConsumer(AsyncJsonWebsocketConsumer):
             await self._notify_match_found(match, p1_info, p2_info)
             
             # Check if AI player was matched
-            from game.services import _active_matches
+            from apps.game.services import _active_matches
             match_state = _active_matches.get(match.id, {})
             if match_state.get('ai_player_id'):
                 await self.send_json({
@@ -190,7 +190,7 @@ class LobbyConsumer(AsyncJsonWebsocketConsumer):
                         await self._notify_match_found(match, matched_p1_info, matched_p2_info)
                         
                         # Check if AI player was matched
-                        from game.services import _active_matches
+                        from apps.game.services import _active_matches
                         match_state = _active_matches.get(match.id, {})
                         if match_state.get('ai_player_id'):
                             await self.send_json({
@@ -213,7 +213,7 @@ class LobbyConsumer(AsyncJsonWebsocketConsumer):
     
     async def _notify_match_found(self, match, p1_info, p2_info):
         """Send matchFound event to both players via their channel names."""
-        from accounts.models import Player
+        from apps.accounts.models import Player
 
         player1 = await self._get_player(p1_info['player_id'])
         player2 = await self._get_player(p2_info['player_id'])
@@ -265,7 +265,7 @@ class LobbyConsumer(AsyncJsonWebsocketConsumer):
 
     async def _get_player(self, player_id):
         from channels.db import database_sync_to_async
-        from accounts.models import Player
+        from apps.accounts.models import Player
         return await database_sync_to_async(Player.objects.get)(id=player_id)
 
 
