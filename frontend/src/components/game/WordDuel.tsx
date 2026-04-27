@@ -84,16 +84,27 @@ export function WordDuel() {
   } | null>(null);
 
   // ---- Socket events ----
-  useSocketEvent<{ opponentUsername: string; scores: { me: number; opponent: number } }>(
-    "matchFound",
-    (p) => {
-      setOpponentUsername(p.opponentUsername);
-      setScores(p.scores);
-      setRoundNumber(0);
-      setMatchEnd(null);
-      setPhase("matchFound");
-    },
-  );
+  useSocketEvent<{
+    opponentUsername: string;
+    scores: { me: number; opponent: number };
+    isAiMatch?: boolean;
+  }>("matchFound", (p) => {
+    setOpponentUsername(p.opponentUsername);
+    setScores(p.scores);
+    setRoundNumber(0);
+    setMatchEnd(null);
+    if (p.isAiMatch) {
+      setErrorMessage(`Matched with AI opponent: ${p.opponentUsername}`);
+      setErrorVariant("warn");
+    }
+    setPhase("matchFound");
+  });
+
+  useSocketEvent<{ message: string; is_ai_match: boolean }>("aiPairingNotification", (p) => {
+    setErrorMessage(p.message);
+    setErrorVariant("warn");
+    console.log("AI Pairing:", p.message);
+  });
 
   useSocketEvent<{
     roundNumber: number;

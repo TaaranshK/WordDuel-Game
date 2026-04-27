@@ -1,5 +1,6 @@
 import asyncio
 import random
+import time
 from datetime import timedelta
 from django.utils import timezone
 from django.db import DatabaseError
@@ -52,13 +53,14 @@ def close_session(session_token: str) -> None:
 
 # matchmaking Service 
 def add_to_lobby(player_id: int, session_token: str, channel_name: str) -> None:
-    """Add player to the matchmaking queue."""
+    """Add player to the matchmaking queue with timestamp tracking."""
     # prevent duplicate entries
     _lobby_queue[:] = [p for p in _lobby_queue if p['player_id'] != player_id]
     _lobby_queue.append({
         'player_id':    player_id,
         'session_token': session_token,
         'channel_name': channel_name,
+        'added_at': time.time(),  # Track when player joined queue
     })
 
 
@@ -69,12 +71,20 @@ def remove_from_lobby(player_id: int) -> None:
 
 def try_match_players() -> tuple | None:
     """
-    If 2+ players in queue, pop first two and create a match.
-    If only 1 player in queue for 10+ seconds, pair with AI.
+    Attempt to match players:
+    1. If 2+ players, match two humans
+    2. If 1 player and timeout NOT exceeded, return None (wait for more)
+    3. If 1 player and timeout exceeded, pair with AI
+    
     Returns (match, p1_info, p2_info) or None.
     """
+    from django.conf import settings
+    
+    print(f"[MATCHMAKING] Queue size: {len(_lobby_queue)}")
+    
     # Pair two human players if available
     if len(_lobby_queue) >= 2:
+        print("[MATCHMAKING] 2+ players found - pairing humans")
         p1_info = _lobby_queue.pop(0)
         p2_info = _lobby_queue.pop(0)
 
@@ -99,11 +109,30 @@ def try_match_players() -> tuple | None:
 
         return match, p1_info, p2_info
 
-    # Single player? Pair with AI after short delay
+    # Single player in queue? Check if timeout exceeded
     if len(_lobby_queue) == 1:
+        timeout_seconds = int(getattr(
+            settings, 
+            'MATCHMAKING_TIMEOUT_SECONDS', 
+            10
+        ))
+        
+        p1_info = _lobby_queue[0]
+        current_time = time.time()
+        time_in_queue = current_time - p1_info['added_at']
+        
+        print(f"[MATCHMAKING] 1 player in queue - waiting {time_in_queue:.1f}s / {timeout_seconds}s timeout")
+        
+        # If timeout NOT exceeded, wait for more players
+        if time_in_queue < timeout_seconds:
+            print(f"[MATCHMAKING] Not yet timeout - waiting for more players")
+            return None
+        
+        # Timeout exceeded! Pair with AI
+        print(f"[MATCHMAKING] TIMEOUT! Pairing with AI")
         from apps.accounts.services import create_or_get_ai_player
         
-        p1_info = _lobby_queue.pop(0)
+        _lobby_queue.pop(0)
         player1 = Player.objects.get(id=p1_info['player_id'])
         ai_player = create_or_get_ai_player()
 
@@ -130,8 +159,10 @@ def try_match_players() -> tuple | None:
             'channel_name': None,  # No WebSocket channel for AI
         }
 
+        print(f"[MATCHMAKING] Created match {match.id}: {player1.username} vs {ai_player.username}")
         return match, p1_info, p2_info
 
+    print(f"[MATCHMAKING] Queue empty - no match")
     return None
 
 

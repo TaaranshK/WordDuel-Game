@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone as dt_timezone
 
@@ -12,7 +13,7 @@ from channels.layers import get_channel_layer
 from django.conf import settings
 from django.utils import timezone
 
-from apps.accounts.services import join_or_create_player, update_player_stats
+from apps.accounts.services import join_or_create_player, update_player_stats, create_or_get_ai_player
 from apps.dictionary.services import get_random_word
 
 from ..models import Guess, Match, Round
@@ -23,6 +24,12 @@ class LobbyEntry:
     player_id: int
     username: str
     channel_name: str
+    joined_at: float = 0  # Track when player joined queue
+    
+    def __post_init__(self):
+        if self.joined_at == 0:
+            self.joined_at = time.time()
+
 
 
 @dataclass
@@ -71,6 +78,7 @@ class MatchState:
 _LOBBY_LOCK = asyncio.Lock()
 _LOBBY_QUEUE: list[LobbyEntry] = []
 _MATCHES: dict[int, MatchState] = {}
+_MATCHMAKING_TASKS: dict[str, asyncio.Task] = {}  # Track background tasks by channel_name
 
 
 def _setting_float(name: str, default: float) -> float:
@@ -332,6 +340,46 @@ async def _broadcast_error(state: MatchState, *, code: str, message: str) -> Non
     )
 
 
+async def _simulate_ai_guess(state: MatchState, tick_number: int) -> None:
+    """
+    AI player attempts to guess during a tick.
+    AI guesses with varying probability based on revealed letters.
+    """
+    async with state.lock:
+        # Check if AI already guessed this tick
+        if state.player2_id in state.guessed_this_tick:
+            return
+        
+        # Determine if AI attempts a guess this tick
+        # AI guesses if at least 40% of letters are revealed
+        if not state.revealed_state or not state.current_word:
+            return
+        
+        revealed_count = sum(1 for c in state.revealed_state if c is not None)
+        total_count = len(state.revealed_state)
+        revealed_percentage = revealed_count / total_count if total_count > 0 else 0
+        
+        # AI guesses if 40%+ revealed and passes random chance check
+        if revealed_percentage < 0.4 or random.random() > 0.65:
+            return
+        
+        # AI attempts the guess
+        state.guessed_this_tick.add(state.player2_id)
+        is_correct = True  # AI always guesses correctly when attempting
+        state.correct_this_tick.add(state.player2_id)
+        
+        # Save guess to database
+        if state.current_round_id:
+            await _db_save_guess(
+                round_id=state.current_round_id,
+                player_id=state.player2_id,
+                tick_number=tick_number,
+                guess_text=state.current_word,
+                is_correct=is_correct,
+                client_sent_at_ms=None,
+            )
+
+
 async def _run_match(match_id: int) -> None:
     state = _MATCHES.get(match_id)
     if state is None:
@@ -392,6 +440,10 @@ async def _run_match(match_id: int) -> None:
                     await _db_save_tick_number(round_id, tick_number)
 
                 await _broadcast_tick_start(state, deadline_ms=deadline)
+
+                # Simulate AI guess if AI player is in match
+                if state.player2_channel is None:  # AI player has no channel
+                    await _simulate_ai_guess(state, tick_number)
 
                 # wait for tick duration
                 await asyncio.sleep(state.tick_duration_ms / 1000)
@@ -541,13 +593,20 @@ class WordDuelConsumer(AsyncWebsocketConsumer):
         if self.match_group:
             await self.channel_layer.group_add(self.match_group, self.channel_name)
 
+        # Send matchFound to client
+        event_payload = {
+            "matchId": str(message["match_id"]),
+            "opponentUsername": message["opponent_username"],
+            "scores": message["scores"],
+        }
+        
+        # Include AI flag if present
+        if message.get("is_ai_match"):
+            event_payload["isAiMatch"] = True
+        
         await self._send_event(
             "matchFound",
-            {
-                "matchId": str(message["match_id"]),
-                "opponentUsername": message["opponent_username"],
-                "scores": message["scores"],
-            },
+            event_payload,
         )
 
     async def ws_opponent_guessed(self, message):
@@ -667,6 +726,12 @@ class WordDuelConsumer(AsyncWebsocketConsumer):
             )
 
             if len(_LOBBY_QUEUE) < 2:
+                # Single player in queue - start background task for AI timeout matching
+                if self.channel_name not in _MATCHMAKING_TASKS or _MATCHMAKING_TASKS[self.channel_name].done():
+                    task = asyncio.create_task(
+                        self._run_timeout_matchmaking(self.player_id, self.channel_name, self.username)
+                    )
+                    _MATCHMAKING_TASKS[self.channel_name] = task
                 return
 
             p1 = _LOBBY_QUEUE.pop(0)
@@ -788,6 +853,110 @@ class WordDuelConsumer(AsyncWebsocketConsumer):
 
     async def _remove_from_lobby(self) -> None:
         _LOBBY_QUEUE[:] = [e for e in _LOBBY_QUEUE if e.channel_name != self.channel_name]
+        
+        # Cancel any pending AI matchmaking task for this player
+        if self.channel_name in _MATCHMAKING_TASKS:
+            task = _MATCHMAKING_TASKS.pop(self.channel_name)
+            if not task.done():
+                task.cancel()
+
+    async def _run_timeout_matchmaking(self, player_id: int, channel_name: str, username: str) -> None:
+        """
+        Background task that waits for MATCHMAKING_TIMEOUT_SECONDS.
+        If another player joins, immediate matching occurs.
+        If timeout is reached, match with AI player.
+        """
+        timeout_seconds = int(getattr(
+            settings, 
+            'MATCHMAKING_TIMEOUT_SECONDS', 
+            10
+        ))
+        start_time = time.time()
+        
+        try:
+            while True:
+                await asyncio.sleep(1)  # Check every 1 second
+                current_time = time.time()
+                time_in_queue = current_time - start_time
+                
+                # Check if another player has been matched meanwhile
+                async with _LOBBY_LOCK:
+                    # If queue is empty, we were already matched
+                    if not any(e.player_id == player_id for e in _LOBBY_QUEUE):
+                        return
+                    
+                    # If timeout exceeded, match with AI
+                    if time_in_queue >= timeout_seconds:
+                        entry = next((e for e in _LOBBY_QUEUE if e.player_id == player_id), None)
+                        if entry:
+                            _LOBBY_QUEUE.remove(entry)
+                        else:
+                            return
+                
+                    # Recheck - if 2+ players now, normal match will handle it
+                    if len(_LOBBY_QUEUE) >= 2:
+                        return
+                
+                # If we reach here at timeout, match with AI
+                if time_in_queue >= timeout_seconds:
+                    await self._match_with_ai(player_id, username, channel_name)
+                    return
+        
+        except asyncio.CancelledError:
+            pass  # Task was cancelled (player disconnected)
+        except Exception as e:
+            print(f"[MATCHMAKING ERROR] {e}")
+            pass
+    
+    async def _match_with_ai(self, player_id: int, username: str, channel_name: str) -> None:
+        """Create a match between the queued player and an AI opponent."""
+        try:
+            # Create the AI match in the database
+            ai_player = await database_sync_to_async(create_or_get_ai_player)()
+            match = await _db_create_match(player_id, ai_player.id)
+            group_name = f"wordduel_{match.id}"
+            
+            # Create match state
+            state = MatchState(
+                match_id=match.id,
+                group_name=group_name,
+                player1_id=player_id,
+                player1_username=username,
+                player1_channel=channel_name,
+                player2_id=ai_player.id,
+                player2_username=ai_player.username,
+                player2_channel=None,  # AI has no channel
+                max_rounds=match.max_rounds,
+                tick_duration_ms=match.tick_duration_ms,
+                score1=0,
+                score2=0,
+            )
+            _MATCHES[match.id] = state
+            
+            # Add human player to the group
+            await self.channel_layer.group_add(group_name, channel_name)
+            
+            # Send matchFound to human player
+            await self.channel_layer.send(
+                channel_name,
+                {
+                    "type": "ws.match_found",
+                    "match_id": match.id,
+                    "group_name": group_name,
+                    "opponent_username": ai_player.username,
+                    "scores": {"me": 0, "opponent": 0},
+                    "is_ai_match": True,
+                },
+            )
+            
+            print(f"[MATCHMAKING] AI match created: {match.id} - {username} vs {ai_player.username}")
+            
+            # Start match loop
+            state.match_task = asyncio.create_task(_run_match(match.id))
+            
+        except Exception as e:
+            print(f"[MATCHMAKING] AI match creation failed: {e}")
+            pass
 
     async def _leave_match(self) -> None:
         if self.match_group:

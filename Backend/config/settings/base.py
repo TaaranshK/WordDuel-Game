@@ -220,3 +220,8 @@ else:
 JWT_SECRET = env('JWT_SECRET', default='your-jwt-secret-key')
 JWT_ALGORITHM = env('JWT_ALGORITHM', default='HS256')
 JWT_EXPIRATION_HOURS = env('JWT_EXPIRATION_HOURS', default=24, cast=int)
+
+# Game Settings
+WORDDUEL_MAX_ROUNDS = env('WORDDUEL_MAX_ROUNDS', default=5, cast=int)
+WORDDUEL_TICK_DURATION_MS = env('WORDDUEL_TICK_DURATION_MS', default=5000, cast=int)
+MATCHMAKING_TIMEOUT_SECONDS = env('MATCHMAKING_TIMEOUT_SECONDS', default=10, cast=int)
