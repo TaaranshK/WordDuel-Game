@@ -1,37 +1,32 @@
-from django.db import IntegrityError
 from rest_framework import serializers
-
 from .models import Dictionary
-from .utils import clean_and_validate_word, get_difficulty_level
 
 
 class DictionarySerializer(serializers.ModelSerializer):
+    """Full word details — admin use only."""
     class Meta:
-        model = Dictionary
-        fields = ["id", "word", "word_length", "difficulty", "is_active"]
-        read_only_fields = ["id", "word_length", "difficulty"]
+        model  = Dictionary
+        fields = ('id', 'word', 'word_length', 'difficulty', 'is_active')
+        read_only_fields = ('word_length',)  # auto-set in model's save()
 
 
-class WordCreateSerializer(serializers.Serializer):
-    word = serializers.CharField(max_length=12)
+class WordCreateSerializer(serializers.ModelSerializer):
+    """Used for POST — adding a new word via admin API."""
+    class Meta:
+        model  = Dictionary
+        fields = ('word', 'difficulty')
 
-    def validate_word(self, value: str) -> str:
-        cleaned = clean_and_validate_word(value)
-        if cleaned is None:
-            raise serializers.ValidationError("Word must be 4–12 alphabetic characters.")
-        return cleaned
+    def validate_word(self, value):
+        value = value.upper().strip()
+        if not value.isalpha():
+            raise serializers.ValidationError("Word must contain letters only.")
+        if len(value) < 4 or len(value) > 12:
+            raise serializers.ValidationError("Word must be between 4 and 12 characters.")
+        return value
 
-    def create(self, validated_data):
-        word = validated_data["word"]
-        word_length = len(word)
-        difficulty = get_difficulty_level(word_length)
 
-        try:
-            return Dictionary.objects.create(
-                word=word,
-                word_length=word_length,
-                difficulty=difficulty,
-                is_active=True,
-            )
-        except IntegrityError:
-            raise serializers.ValidationError({"word": "Word already exists."})
+class RandomWordSerializer(serializers.ModelSerializer):
+    """Internal use only — passed to game engine, never sent to client."""
+    class Meta:
+        model  = Dictionary
+        fields = ('word', 'word_length')

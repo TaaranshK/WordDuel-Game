@@ -1,6 +1,8 @@
-from django.urls import re_path
-from .consumers.wordduel import WordDuelConsumer
+from django.urls import path
+from game.consumers.lobby import LobbyConsumer
+from game.consumers.game import GameConsumer
 
 websocket_urlpatterns = [
-    re_path(r"ws/wordduel/$", WordDuelConsumer.as_asgi()),
+    path('ws/lobby/',              LobbyConsumer.as_asgi()),
+    path('ws/game/<int:match_id>/', GameConsumer.as_asgi()),
 ]

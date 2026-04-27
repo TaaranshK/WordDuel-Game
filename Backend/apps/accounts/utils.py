@@ -1,69 +1,74 @@
-import jwt
-from datetime import datetime, timedelta
-from django.conf import settings
-from rest_framework.authentication import BaseAuthentication
-from rest_framework.exceptions import AuthenticationFailed
-from .models import Player
+import secrets
+import string
+from django.utils import timezone
 
 
-def generate_jwt_token(player):
+def generate_session_token(length: int = 64) -> str:
     """
-    Generate JWT token for a player.
+    Generate a cryptographically secure session token.
+    Uses secrets module — safe for session identity.
+    Returns a hex string of given length.
     """
-    secret = getattr(settings, "JWT_SECRET", "your-jwt-secret-key")
-    algorithm = getattr(settings, "JWT_ALGORITHM", "HS256")
-    expiration_hours = int(getattr(settings, "JWT_EXPIRATION_HOURS", 24))
-    
-    payload = {
-        'player_id': player.id,
-        'username': player.username,
-        'exp': datetime.utcnow() + timedelta(hours=expiration_hours),
-        'iat': datetime.utcnow()
+    return secrets.token_hex(length // 2)
+
+
+def sanitize_username(username: str) -> str:
+    """
+    Clean and normalize a raw username input.
+    - Strip whitespace
+    - Lowercase
+    - Remove non-alphanumeric characters
+    """
+    return ''.join(
+        char for char in username.strip().lower()
+        if char in string.ascii_lowercase + string.digits
+    )
+
+
+def is_valid_username(username: str) -> tuple[bool, str]:
+    """
+    Validate a username against game rules.
+    Returns (is_valid, error_message).
+
+    Rules:
+    - Must not be empty
+    - Must be alphanumeric only
+    - Must be between 3 and 50 characters
+    """
+    if not username:
+        return False, 'Username cannot be empty.'
+
+    if not username.isalnum():
+        return False, 'Username must be alphanumeric only.'
+
+    if len(username) < 3:
+        return False, 'Username must be at least 3 characters.'
+
+    if len(username) > 50:
+        return False, 'Username cannot exceed 50 characters.'
+
+    return True, ''
+
+
+def format_player_stats(player) -> dict:
+    """
+    Returns a clean stats summary dict for a player.
+    Used in leaderboard and profile responses.
+    """
+    win_rate = (
+        round((player.total_wins / player.total_matches) * 100, 1)
+        if player.total_matches > 0 else 0.0
+    )
+
+    return {
+        'player_id':     player.id,
+        'username':      player.username,
+        'total_wins':    player.total_wins,
+        'total_matches': player.total_matches,
+        'win_rate':      f"{win_rate}%",
+        'member_since':  player.created_at.strftime('%Y-%m-%d'),
+        'last_seen':     (
+            player.last_seen_at.strftime('%Y-%m-%d %H:%M:%S')
+            if player.last_seen_at else 'Never'
+        ),
     }
-    
-    token = jwt.encode(payload, secret, algorithm=algorithm)
-    return token
-
-
-def decode_jwt_token(token):
-    """
-    Decode and verify JWT token.
-    """
-    secret = getattr(settings, "JWT_SECRET", "your-jwt-secret-key")
-    algorithm = getattr(settings, "JWT_ALGORITHM", "HS256")
-    
-    try:
-        payload = jwt.decode(token, secret, algorithms=[algorithm])
-        return payload
-    except jwt.ExpiredSignatureError:
-        raise AuthenticationFailed('Token has expired')
-    except jwt.InvalidTokenError:
-        raise AuthenticationFailed('Invalid token')
-
-
-class JWTAuthentication(BaseAuthentication):
-    """
-    JWT Authentication class for DRF.
-    """
-    def authenticate(self, request):
-        auth_header = request.META.get('HTTP_AUTHORIZATION', '')
-        
-        if not auth_header:
-            return None
-        
-        try:
-            prefix, token = auth_header.split()
-            if prefix.lower() != 'bearer':
-                raise AuthenticationFailed('Invalid token prefix')
-        except ValueError:
-            raise AuthenticationFailed('Invalid authorization header')
-        
-        payload = decode_jwt_token(token)
-        player_id = payload.get('player_id')
-        
-        try:
-            player = Player.objects.get(id=player_id)
-        except Player.DoesNotExist:
-            raise AuthenticationFailed('Player not found')
-        
-        return (player, None)

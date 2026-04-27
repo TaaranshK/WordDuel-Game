@@ -2,24 +2,24 @@ from django.db import models
 
 
 class Dictionary(models.Model):
-    """
-    Dictionary model storing words available for the game.
-    """
-    DIFFICULTY_CHOICES = [
-        ('easy', 'Easy'),
-        ('medium', 'Medium'),
-        ('hard', 'Hard'),
-    ]
-    
-    id = models.BigAutoField(primary_key=True)
-    word = models.CharField(max_length=12, unique=True)
+
+    class Difficulty(models.TextChoices):
+        EASY   = 'easy',   'Easy'
+        MEDIUM = 'medium', 'Medium'
+        HARD   = 'hard',   'Hard'
+
+    word        = models.CharField(max_length=12, unique=True)
     word_length = models.IntegerField()
-    difficulty = models.CharField(max_length=10, choices=DIFFICULTY_CHOICES, default='medium')
-    is_active = models.BooleanField(default=True)
+    difficulty  = models.CharField(max_length=6, choices=Difficulty.choices, default=Difficulty.MEDIUM)
+    is_active   = models.BooleanField(default=True)
 
     class Meta:
-        ordering = ['word']
-        verbose_name_plural = 'Dictionaries'
+        db_table = 'dictionary'
+
+    def save(self, *args, **kwargs):
+        self.word        = self.word.upper().strip()
+        self.word_length = len(self.word)
+        super().save(*args, **kwargs)
 
     def __str__(self):
-        return self.word
+        return f"{self.word} ({self.difficulty})"
